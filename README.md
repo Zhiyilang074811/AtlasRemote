@@ -5,7 +5,7 @@
 
 <div align="center">
 
-![Rust](https://img.shields.io/badge/Rust-2026%2B-orange)
+![Rust](https://img.shields.io/badge/Rust-2026+-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 ![Status](https://img.shields.io/badge/Status-Alpha-yellow)
 
@@ -24,67 +24,79 @@
 
 ## 架构
 
-`\n┌──────────────┐     ATLS/QUIC      ┌──────────────┐
-│  Web Client   │ ◄────────────────► │   Relay      │
-│  (Vue 3)      │                    │  (Signaling) │
-└──────────────┘                     └──────────────┘
-                                         │
-                                         ▼
-┌──────────────┐     ATLS/TCP         ┌──────────────┐
-│  Android     │ ◄───────────────────► │ Windows Host │
-│  Client      │   9090 (TCP/WS)      │ (DXGI+NVENC) │
-└──────────────┘                       └──────────────┘
-`
+\\\
+                    ┌──────────────────────────────┐
+                    │         Web Client           │
+                    │    (Vue 3 + Vite + TS)       │
+                    │    ws://host:8080            │
+                    └──────────────┬───────────────┘
+                                   │ WebSocket
+                    ┌──────────────▼───────────────┐
+                    │       Web Relay Server        │
+                    │     (warp + tokio)            │
+                    │     ws://host:8080           │
+                    └──────────────┬───────────────┘
+                                   │ TCP
+                    ┌──────────────▼───────────────┐
+                    │        Windows Host           │
+                    │   (DXGI + H.264 + ATLS)       │
+                    │   tcp://host:9090             │
+                    └──────────────────────────────┘
+\\\
 
 ## 快速开始
 
 ### 前提条件
 
-- Rust 1.75+ (ustup)
+- Rust 1.75+ (rustup)
 - Windows SDK (用于 DXGI 捕获)
 - Node.js 20+ (用于 Web Client)
 
 ### 构建主机端
 
-`ash
+\\\ash
 cargo build -p atlas-host --release
-`
+\\\
 
 ### 启动 Web Client
 
-`ash
+\\\ash
 cd apps/web
 npm install
 npm run dev
 # 访问 http://localhost:3000
-`
+\\\
 
-### 启动中继服务器
+### 启动 WebSocket Relay
 
-`ash
+\\\ash
 cargo run -p atlas-web-relay -- 9090 8080
-`
+\\\
 
 ## 项目结构
 
-`
+\\\
 AtlasRemote/
 ├── crates/           # Rust 核心库
-│   ├── protocol/     # ATLS 协议
-│   ├── crypto/       # 加密模块
+│   ├── protocol/     # ATLS 协议定义
+│   ├── crypto/       # 加密 (Ed25519/X25519/AES-GCM)
 │   ├── capture/      # 屏幕捕获 (DXGI)
-│   ├── codec/        # 视频编码
-│   └── ...
+│   ├── codec/        # 视频编码 (H.264/NVENC)
+│   ├── input/        # 输入模拟 (鼠标/键盘)
+│   ├── session/      # 加密会话管理
+│   ├── auth/         # 设备认证 (Device ID + Pin Code)
+│   ├── transport/    # 传输层
+│   └── ffi-android/  # Android FFI
 ├── apps/
 │   ├── host/         # Windows 主机
 │   ├── client/       # Android 客户端
-│   └── web/          # Web 远程桌面
+│   └── web/          # Web 远程桌面 (Vue 3)
 ├── services/
 │   ├── relay/        # 中继服务器
 │   ├── signaling/    # 信令服务器
 │   └── web-relay/    # WebSocket 桥接
 └── docs/             # 开发文档
-`
+\\\
 
 ## 技术栈
 
@@ -94,8 +106,8 @@ AtlasRemote/
 | Web 客户端 | Vue 3 + Vite + TypeScript |
 | 协议 | ATLS (Atlas Transport Layer Protocol) |
 | 加密 | Ed25519 + X25519 + AES-GCM |
-| 传输 | TCP (当前) → QUIC (规划) |
-| 视频编码 | H.264 (NVENC) |
+| 传输 | TCP (当前) → WebSocket → QUIC (规划) |
+| 视频编码 | H.264 (NVENC 硬件加速) |
 
 ## 安全特性
 
@@ -106,31 +118,31 @@ AtlasRemote/
 
 ## 开发路线图
 
-### S-009: 产品化 (当前)
+### Phase 1: 基础体验 (S-009)
 - [x] Web Client 基础框架
+- [x] WebSocket 中继服务器
 - [ ] Windows Installer
 - [ ] 设备 ID 系统
-- [ ] Relay Server 完整实现
-- [ ] Web Client 完整视频流
+- [ ] 完整 ATLS 协议桥接
 
-### S-010: 通信套件
+### Phase 2: 通信套件 (S-010)
 - [ ] 文件传输
 - [ ] 剪贴板同步
 - [ ] 远程聊天
 
-### S-011: 性能优化
+### Phase 3: 性能优化 (S-011)
 - [ ] 1080p @ 60fps
 - [ ] <50ms 延迟
 - [ ] ABR 自适应码率
 
-### S-012: v1.0 开源发布
+### Phase 4: v1.0 开源发布 (S-012)
 - [ ] 完整文档
 - [ ] Docker 部署
 - [ ] CI/CD 流水线
 
 ## 贡献
 
-欢迎 PR 和 Issue！请阅读 [CONTRIBUTING.md](docs/CONTRIBUTING.md)
+欢迎 PR 和 Issue！请阅读 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 ## 许可证
 
@@ -139,4 +151,3 @@ MIT License - 详见 [LICENSE](LICENSE)
 ---
 
 **Made with ❤️ by Atlas Remote Team**
-

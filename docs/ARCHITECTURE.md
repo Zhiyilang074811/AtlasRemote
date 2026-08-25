@@ -2,7 +2,7 @@
 
 ## 系统架构
 
-`
+\\\
                     ┌──────────────────────────────┐
                     │         Web Client           │
                     │    (Vue 3 + Vite + TS)       │
@@ -20,7 +20,7 @@
                     │   (DXGI + H.264 + ATLS)       │
                     │   tcp://host:9090             │
                     └──────────────────────────────┘
-`
+\\\
 
 ## ATLS 协议
 
@@ -28,13 +28,13 @@ Atlas Transport Layer Protocol (ATLS) v1
 
 ### 帧格式
 
-`
+\\\
 ┌──────────┬─────────┬──────────┬────────────┬─────────┬─────────┬──────────┬────────────┬────────┐
 │ MAGIC(4) │ VERSION │  TYPE    │ LENGTH(4)  │ WIDTH(4)│ HEIGHT(4)│ TIMESTAMP│  CODEC(2)  │ CRC(4) │
 │ 0x414T4C │  0x0001 │ PacketType│ PayloadLen │ Width  │ Height  │ Timestamp │  Codec     │ CRC32  │
 └──────────┴─────────┴──────────┴────────────┴─────────┴─────────┴──────────┴────────────┴────────┘
   Header = 30 bytes
-`
+\\\
 
 ### 数据包类型
 
@@ -53,7 +53,7 @@ Atlas Transport Layer Protocol (ATLS) v1
 | Codec | Value | 说明 |
 |-------|-------|------|
 | BGRA | 0 | 原始位图 |
-| H264 | 2 | H.264 视频 |
+| H264 | 2 | H.264 视频 (NVENC) |
 | H265 | 3 | H.265 视频 |
 
 ## 加密方案

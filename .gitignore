@@ -6,14 +6,50 @@ node_modules/
 /dist
 /electron-dist
 /electron-release
+target/
+build/
+*.apk
+*.apk.idsig
+*.exe
+*.dll
+*.lib
+*.exp
+*.def
+*.obj
+*.a
+*.so
+*.dylib
 
 # Logs
 *.log
 logs/
+*.txt
+gradle_out.txt
+host_err.txt
+host_log.txt
+host_out.txt
+host_stderr.txt
+host_stdout.txt
+host_v*_err.txt
+host_v*_out.txt
+host_v*_stderr.txt
+host_v*_stdout.txt
+host_v*_log.txt
+server_error.txt
+server_log.txt
+logcat_capture.txt
+logcat_out.txt
+tombstone_*.txt
+vs_errors.txt
+vs_install_err.txt
+vs_install_out.txt
+vs_packages.txt
 
 # OS
 .DS_Store
 Thumbs.db
+prefs.xml
+atlas_prefs.xml
 
 # IDE
 .vscode/
@@ -26,8 +62,7 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Rust
-/target/
+# Rust build artifacts
 .cargo-build/
 .cargo-lock
 build_out/
@@ -35,25 +70,89 @@ build_tmp/
 build_target/
 mytarget/
 buildr/
+test_link/
 
 # Android
 apps/android/.gradle/
 apps/android/build/
 apps/android/app/build/
+apps/android/app/.cxx/
 build_android/
 apk_work/
 tmp_apk*/
+extracted_apk/
+tmp_apk_mod/
+tmp_apk_rebuild/
+tmp_apk_v1*/
+tmp_apk2/
+tmp_apk3/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.py.bak
+*.bak
+*.bak2
+*.bak3
 .venv/
 .pytest_cache/
 
-# Weclaw internals
+# Temp scripts and artifacts
+_fix.py
+_fmt.py
+_fw.py
+_gen*.py
+_pk.py
+_w.py
+_write*.py
+add_log.py
+check_kt.py
+fix*.py
+fix*.ps1
+gen*.py
+host_proxy.py
+host_v*.py
+restore_cargo.py
+run_*.py
+test_*.py
+tmp_*.py
+tmp_*.txt
+tmp_*.xml
+verify.py
+write*.py
+build_test.*
+build.ps1
+set_env.bat
+install_driver.*
+remove_phantom.*
+DriverInstall.*
+RemovePhantom.*
+h264_test_stream.h264
+
+# Keystore
+*.keystore
+
+# Screenshots
+*.png
+*.jpg
+*.webp
+screenshot*.png
+screen*.png
+ui*.xml
+ui_dump.xml
+
+# Audit/Weclaw internals (outside repo scope)
+audit/
 reality/
 lqos_runtime/
 token_*.txt
 *_state.json
-*.log
+
+# APK work dirs
+atlas_extracted/
+apm_work/
+atlas_ready.apk
+atlas_clean.apk
+atlas_final.apk
+services/web-relay/relay.py
