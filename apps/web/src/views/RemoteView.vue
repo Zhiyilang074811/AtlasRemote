@@ -24,6 +24,7 @@
       <div v-if="showDebug" class="debug-panel">
         <div class="debug-item"><span class="label">Res</span><span class="value">{{ width }}x{{ height }}</span></div>
         <div class="debug-item"><span class="label">FPS</span><span class="value">{{ fps }}</span></div>
+        <div class="debug-item"><span class="label">Codec</span><span class="value">{{ codecName }}</span></div>
         <div class="debug-item"><span class="label">Latency</span><span class="value">{{ latency }}ms</span></div>
         <div class="debug-item mouse-pos"><span class="label">Mouse</span><span class="value">{{ mouseX }}, {{ mouseY }}</span></div>
       </div>
@@ -63,6 +64,8 @@ const fps = ref(0)
 const bitrate = ref(0)
 const mouseX = ref(0)
 const mouseY = ref(0)
+const codecName = ref("BGRA")
+const codecInitialized = ref(false)
 
 const statusColor = computed(() => {
   const s = appStore.connectionStatus
@@ -79,69 +82,258 @@ let frameCount = 0
 let lastFpsTime = Date.now()
 let lastFrameTime = 0
 
-onMounted(async () => {
-  if (canvasRef.value) ctx = canvasRef.value.getContext("2d")
-  const deviceId = route.params.deviceId as string || "local"
-  const pairCode = appStore.pairCode || "000000"
+// WebCodecs H.264 decoder
+let videoDecoder: VideoDecoder | null = null
+const decodedFrames: EncodedVideoChunk[] = []
+let decoderConfigured = false
+let pendingFrames: ImageData[] = []
+const SPS_BUFFER: Uint8Array[] = []
+const PPS_BUFFER: Uint8Array[] = []
 
-  try {
-    await client.connect(deviceId, pairCode)
-    appStore.deviceId = deviceId
-    appStore.connectionStatus = "connected"
-    connected.value = true
-    logStore.add("info", "Remote desktop connected")
-    client.onFrame(handleVideoFrame)
-    animFrame = requestAnimationFrame(updateFps)
-    videoAreaRef.value?.addEventListener("click", () => videoAreaRef.value?.requestPointerLock())
-    document.addEventListener("pointerlockchange", () => {
-      pointerLock.value = !!document.pointerLockElement
-    })
-    document.addEventListener("mousemove", onMouseMove)
-    document.addEventListener("keydown", onKeyDown)
-    document.addEventListener("keyup", onKeyUp)
-    document.addEventListener("contextmenu", onContextMenu)
-    document.addEventListener("wheel", onWheel, { passive: false })
-  } catch (e: any) {
-    appStore.connectionStatus = "error"
-    logStore.add("error", "Failed: " + e.message)
+function extractNalu(data: Uint8Array, offset: number, size: number): Uint8Array | null {
+  if (offset + size > data.length) return null
+  return data.subarray(offset, offset + size)
+}
+
+function findStartCode(data: Uint8Array, offset: number): number {
+  if (offset + 4 <= data.length && data[offset] === 0 && data[offset + 1] === 0 && data[offset + 2] === 0 && data[offset + 3] === 1) return 4
+  if (offset + 3 <= data.length && data[offset] === 0 && data[offset + 1] === 0 && data[offset + 2] === 1) return 3
+  return 0
+}
+
+function parseH264SpsPps(nalu: Uint8Array): { width?: number; height?: number } {
+  if (nalu.length < 4) return {}
+  const rbsp = new Uint8Array(nalu.length - 4)
+  for (let i = 4; i < nalu.length; i++) rbsp[i - 4] = nalu[i]
+  const view = new DataView(rbsp.buffer, rbsp.byteOffset, rbsp.byteLength)
+  const firstByte = rbsp[0]
+  const sliceType = (firstByte >> 5) & 0x1f
+  const picType = firstByte & 0x1f
+  if (sliceType === 5) {
+    const log2_max_frame_num = 4 + ((picType >> 4) & 0x03)
+    const vui_parameters = rbsp[1]
+    if (vui_parameters & 0x40) {
+      let pos = 2
+      const aspect_ratio = rbsp[pos++]
+      if (aspect_ratio === 255) {
+        const sar_width = view.getUint16(pos); pos += 2
+        const sar_height = view.getUint16(pos); pos += 2
+      }
+    }
+    const log2_max_pic_order = 4 + ((rbsp[pos++] & 0x03))
+    const frame_mbs_only = ((rbsp[pos++] >> 7) & 0x01)
+    const mb_address = (16 + (rbsp[pos] & 0x3f)) << 1
+    const ref_frames = rbsp[pos++] & 0x1f
+    const num_ref_idx = rbsp[pos++] & 0x1f
+    const pic_width = (view.getUint16(pos) & 0x3ff) * 2 - 1 + mb_address
+    pos += 2
+    const pic_height = (2 - frame_mbs_only) * ((view.getUint16(pos) & 0x3ff) * 2 - 1 + mb_address)
+    return { width: pic_width, height: pic_height }
   }
-})
+  return {}
+}
 
-onUnmounted(() => {
-  cancelAnimationFrame(animFrame)
-  client.disconnect()
-  document.removeEventListener("pointerlockchange", () => {})
-  document.removeEventListener("mousemove", onMouseMove)
-  document.removeEventListener("keydown", onKeyDown)
-  document.removeEventListener("keyup", onKeyUp)
-  document.removeEventListener("contextmenu", onContextMenu)
-  document.removeEventListener("wheel", onWheel)
-})
+function initVideoDecoder(width: number, height: number) {
+  if (typeof VideoDecoder === "undefined") {
+    logStore.add("warn", "VideoDecoder not supported in this browser")
+    return
+  }
+  if (videoDecoder) {
+    videoDecoder.close()
+    videoDecoder = null
+  }
+  decoderConfigured = false
+  SPS_BUFFER.length = 0
+  PPS_BUFFER.length = 0
+
+  videoDecoder = new VideoDecoder({
+    output: (frame) => {
+      if (!ctx || !canvasRef.value) { frame.close(); return }
+      const area = videoAreaRef.value
+      if (!area) { frame.close(); return }
+      const r = area.getBoundingClientRect()
+      const imgAspect = frame.displayWidth / frame.displayHeight
+      const areaAspect = r.width / r.height
+      let dw = r.width, dh = r.height
+      if (imgAspect > areaAspect) dh = r.width / imgAspect
+      else dw = r.height * imgAspect
+      const dx = (r.width - dw) / 2, dy = (r.height - dh) / 2
+      canvasRef.value.width = frame.displayWidth
+      canvasRef.value.height = frame.displayHeight
+      ctx.drawImage(frame, 0, 0)
+      // Scale to fit
+      ctx.save()
+      ctx.drawImage(canvasRef.value, 0, 0, frame.displayWidth, frame.displayHeight, dx, dy, dw, dh)
+      ctx.restore()
+      width.value = frame.displayWidth
+      height.value = frame.displayHeight
+      codecName.value = "H264"
+      frame.close()
+    },
+    error: (e) => {
+      logStore.add("error", `VideoDecoder error: ${e.message}`)
+    },
+  })
+
+  videoDecoder.configure({
+    codec: "avc1.42001e",
+    width,
+    height,
+    description: createAVCC(SPS_BUFFER, PPS_BUFFER),
+  })
+  decoderConfigured = true
+  codecInitialized.value = true
+  logStore.add("info", `H264 decoder configured: ${width}x${height}`)
+}
+
+function createAVCC(sps: Uint8Array[], pps: Uint8Array[]): Uint8Array {
+  const spsData = sps[0]
+  const ppsData = pps[0]
+  if (!spsData || !ppsData) return new Uint8Array(0)
+
+  const spsLength = spsData.length
+  const ppsLength = ppsData.length
+
+  const avcc = new Uint8Array(7 + 2 + spsLength + 1 + 2 + ppsLength)
+  let offset = 0
+  avcc[offset++] = 1 // version
+  avcc[offset++] = spsData[1] // profile
+  avcc[offset++] = spsData[2] // compatibility
+  avcc[offset++] = spsData[3] // level
+  avcc[offset++] = 0xFF // 6 bits reserved + 2 bits numSps
+  avcc[offset++] = 0xE1 // 3 bits reserved + numPPS
+  // SPS
+  avcc[offset++] = (spsLength >> 8) & 0xFF
+  avcc[offset++] = spsLength & 0xFF
+  avcc.set(spsData, offset)
+  offset += spsLength
+  // PPS
+  avcc[offset++] = (ppsLength >> 8) & 0xFF
+  avcc[offset++] = ppsLength & 0xFF
+  avcc.set(ppsData, offset)
+  return avcc
+}
+
+function parseATLSHeader(data: Uint8Array): { codec: number; width: number; height: number; payloadOffset: number; payloadLength: number } | null {
+  if (data.length < 36) return null
+  const magic = String.fromCharCode(data[0], data[1], data[2], data[3])
+  if (magic !== "ATLS") return null
+  const codec = data[20] | (data[21] << 8)
+  const width = data[12] | (data[13] << 8) | (data[14] << 16) | (data[15] << 24)
+  const height = data[16] | (data[17] << 8) | (data[18] << 16) | (data[19] << 24)
+  const payloadLength = data[8] | (data[9] << 8) | (data[10] << 16) | (data[11] << 24)
+  return { codec, width, height, payloadOffset: 36, payloadLength }
+}
 
 function handleVideoFrame(blob: Blob) {
-  if (!ctx || !canvasRef.value) return
-  const img = new Image()
-  const url = URL.createObjectURL(blob)
-  img.onload = () => {
-    const area = videoAreaRef.value
-    if (!area) { URL.revokeObjectURL(url); return }
-    const r = area.getBoundingClientRect()
-    const imgAspect = img.width / img.height
-    const areaAspect = r.width / r.height
-    let dw = r.width, dh = r.height
-    if (imgAspect > areaAspect) dh = r.width / imgAspect
-    else dw = r.height * imgAspect
-    const dx = (r.width - dw) / 2, dy = (r.height - dh) / 2
-    canvasRef.value!.width = dw
-    canvasRef.value!.height = dh
-    if (ctx) ctx.drawImage(img, dx, dy, dw, dh)
-    width.value = img.width
-    height.value = img.height
-    bitrate.value = blob.size * 8 / ((Date.now() - lastFrameTime) / 1000)
-    lastFrameTime = Date.now()
-    URL.revokeObjectURL(url)
+  const reader = new FileReader()
+  reader.onload = () => {
+    const data = new Uint8Array(reader.result as ArrayBuffer)
+    const header = parseATLSHeader(data)
+    if (!header) {
+      logStore.add("warn", "Invalid ATLS frame header")
+      return
+    }
+
+    const { codec, width: w, height: h, payloadOffset, payloadLength } = header
+    const payload = data.subarray(payloadOffset, payloadOffset + payloadLength)
+
+    if (codec === 2) {
+      // H264
+      codecName.value = "H264"
+      if (!videoDecoder) {
+        initVideoDecoder(w, h)
+        return
+      }
+      if (!decoderConfigured) {
+        initVideoDecoder(w, h)
+        return
+      }
+
+      // Parse NAL units to extract SPS/PPS
+      let offset = 0
+      while (offset < payload.length) {
+        const scLen = findStartCode(payload, offset)
+        if (scLen === 0) { offset++; continue }
+        const naluType = payload[offset + scLen] & 0x1f
+        let naluEnd = payload.length
+        for (let i = offset + scLen; i < payload.length - 3; i++) {
+          if (payload[i] === 0 && payload[i + 1] === 0 && (payload[i + 2] === 0 || payload[i + 3] === 1)) {
+            naluEnd = i
+            break
+          }
+        }
+        const naluSize = naluEnd - offset
+        const nalu = payload.subarray(offset, naluEnd)
+
+        if (naluType === 7) {
+          SPS_BUFFER.length = 0
+          SPS_BUFFER.push(nalu)
+          const spsInfo = parseH264SpsPsp(nalu)
+          if (spsInfo.width && spsInfo.height && spsInfo.width !== w) {
+            initVideoDecoder(spsInfo.width, spsInfo.height)
+          }
+        } else if (naluType === 8) {
+          PPS_BUFFER.length = 0
+          PPS_BUFFER.push(nalu)
+          if (decoderConfigured && SPS_BUFFER.length > 0) {
+            videoDecoder?.configure({
+              codec: "avc1.42001e",
+              width: w,
+              height: h,
+              description: createAVCC(SPS_BUFFER, PPS_BUFFER),
+            })
+            decoderConfigured = true
+          }
+        }
+
+        // Decode the NAL unit as a complete frame
+        if (naluType === 1 || naluType === 5 || naluType === 6) {
+          try {
+            const chunk = new EncodedVideoChunk({
+              type: naluType === 5 ? "key" : "delta",
+              timestamp: Date.now() * 1000,
+              data: nalu,
+            })
+            videoDecoder?.decode(chunk)
+          } catch (e) {
+            logStore.add("warn", `Decode error: ${e}`)
+          }
+        }
+
+        offset = naluEnd + (naluEnd < payload.length ? scLen : 0)
+      }
+      bitrate.value = data.length * 8 / ((Date.now() - lastFrameTime) / 1000)
+      lastFrameTime = Date.now()
+    } else {
+      // BGRA / raw - fallback to image rendering
+      codecName.value = "BGRA"
+      if (!ctx || !canvasRef.value) return
+      const img = new Image()
+      const url = URL.createObjectURL(blob)
+      img.onload = () => {
+        const area = videoAreaRef.value
+        if (!area) { URL.revokeObjectURL(url); return }
+        const r = area.getBoundingClientRect()
+        const imgAspect = img.width / img.height
+        const areaAspect = r.width / r.height
+        let dw = r.width, dh = r.height
+        if (imgAspect > areaAspect) dh = r.width / imgAspect
+        else dw = r.height * imgAspect
+        const dx = (r.width - dw) / 2, dy = (r.height - dh) / 2
+        canvasRef.value!.width = dw
+        canvasRef.value!.height = dh
+        if (ctx) ctx.drawImage(img, dx, dy, dw, dh)
+        width.value = img.width
+        height.value = img.height
+        bitrate.value = blob.size * 8 / ((Date.now() - lastFrameTime) / 1000)
+        lastFrameTime = Date.now()
+        URL.revokeObjectURL(url)
+      }
+      img.src = url
+    }
   }
-  img.src = url
+  reader.readAsArrayBuffer(blob)
 }
 
 function updateFps() {
@@ -213,6 +405,48 @@ function toggleFullscreen() {
 function toggleDebug() { showDebug.value = !showDebug.value }
 
 watch(fullscreen, (v) => { if (!v) showControls.value = true })
+
+onMounted(async () => {
+  if (canvasRef.value) ctx = canvasRef.value.getContext("2d")
+  const deviceId = (route.params.deviceId as string) || "local"
+  const pairCode = appStore.pairCode || "000000"
+
+  try {
+    await client.connect(deviceId, pairCode)
+    appStore.deviceId = deviceId
+    appStore.connectionStatus = "connected"
+    connected.value = true
+    logStore.add("info", "Remote desktop connected")
+    client.onFrame(handleVideoFrame)
+    animFrame = requestAnimationFrame(updateFps)
+    videoAreaRef.value?.addEventListener("click", () => videoAreaRef.value?.requestPointerLock())
+    document.addEventListener("pointerlockchange", () => {
+      pointerLock.value = !!document.pointerLockElement
+    })
+    document.addEventListener("mousemove", onMouseMove)
+    document.addEventListener("keydown", onKeyDown)
+    document.addEventListener("keyup", onKeyUp)
+    document.addEventListener("contextmenu", onContextMenu)
+    document.addEventListener("wheel", onWheel, { passive: false })
+  } catch (e: any) {
+    appStore.connectionStatus = "error"
+    logStore.add("error", "Failed: " + e.message)
+  }
+})
+
+onUnmounted(() => {
+  cancelAnimationFrame(animFrame)
+  videoDecoder?.close()
+  videoDecoder = null
+  decoderConfigured = false
+  client.disconnect()
+  document.removeEventListener("pointerlockchange", () => {})
+  document.removeEventListener("mousemove", onMouseMove)
+  document.removeEventListener("keydown", onKeyDown)
+  document.removeEventListener("keyup", onKeyUp)
+  document.removeEventListener("contextmenu", onContextMenu)
+  document.removeEventListener("wheel", onWheel)
+})
 </script>
 
 <style lang="scss" scoped>
