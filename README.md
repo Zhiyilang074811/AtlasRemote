@@ -16,16 +16,15 @@
 - [x] Windows 主机端（DXGI 捕获 + H.264 编码）
 - [x] ATLS 二进制协议（加密帧传输）
 - [x] Ed25519 + X25519 + AES-GCM 安全加密
-- [ ] Web 浏览器远程桌面（开发中）
+- [x] Web 浏览器远程桌面（已完成）
 - [ ] Android 客户端（开发中）
 - [ ] QUIC 传输层（开发中）
-- [ ] 中继服务器（开发中）
+- [x] WebSocket 中继服务器（已完成）
 - [ ] 设备 ID 系统（开发中）
 
 ## 架构
 
-`
-┌──────────────┐     ATLS/QUIC      ┌──────────────┐
+`\n┌──────────────┐     ATLS/QUIC      ┌──────────────┐
 │  Web Client   │ ◄────────────────► │   Relay      │
 │  (Vue 3)      │                    │  (Signaling) │
 └──────────────┘                     └──────────────┘
@@ -140,3 +139,4 @@ MIT License - 详见 [LICENSE](LICENSE)
 ---
 
 **Made with ❤️ by Atlas Remote Team**
+
