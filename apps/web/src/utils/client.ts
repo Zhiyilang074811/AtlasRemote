@@ -33,8 +33,6 @@ export class AtlasClient {
 
   get connectionState() { return this.state }
   get isConnected() { return this.state.status === "connected" }
-  get relayHost() { return this.relayHost }
-  get relayPort() { return this.relayPort }
 
   setRelay(host: string, port: number) {
     this.relayHost = host
@@ -145,3 +143,4 @@ export class AtlasClient {
 }
 
 export const client = new AtlasClient()
+
