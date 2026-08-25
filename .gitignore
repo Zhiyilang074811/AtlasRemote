@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+/.pnpm-store/
+
+# Build outputs
+/dist
+/electron-dist
+/electron-release
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Rust
+/target/
+.cargo-build/
+.cargo-lock
+build_out/
+build_tmp/
+build_target/
+mytarget/
+buildr/
+
+# Android
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+build_android/
+apk_work/
+tmp_apk*/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+
+# Weclaw internals
+reality/
+lqos_runtime/
+token_*.txt
+*_state.json
+*.log

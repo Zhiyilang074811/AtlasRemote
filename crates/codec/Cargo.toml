@@ -1,0 +1,17 @@
+[package]
+name = "atlas-codec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+atlas-frame = { path = "../frame" }
+tracing = { workspace = true }
+chrono = { workspace = true }
+bytemuck = "1.14"
+windows = { workspace = true, features = ["Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D11"] }
+libloading = "0.9"
+anyhow = { workspace = true }
+
+[features]
+default = ["nvenc"]
+nvenc = ["windows/Win32_System_LibraryLoader"]

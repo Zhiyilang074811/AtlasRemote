@@ -1,0 +1,14 @@
+[package]
+name = "atlas-session"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+atlas-crypto = { path = "../crypto" }
+atlas-auth = { path = "../auth" }
+atlas-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+rand = { workspace = true }
+chrono = { workspace = true }

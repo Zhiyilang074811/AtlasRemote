@@ -1,0 +1,77 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/crypto",
+    "crates/config",
+    "crates/protocol",
+    "crates/device",
+    "crates/codec",
+    "crates/capture",
+    "crates/transport",
+    "crates/frame",
+    "crates/input",
+    "crates/network",
+    "crates/auth",
+    "crates/session",
+    "crates/abr",
+    "crates/telemetry",
+    "crates/file-transfer",
+    "apps/host",
+    "apps/host-service",
+    "apps/client",
+    "apps/capture-test",
+    "apps/capture-viewer",
+    "apps/codec-test",
+    "services/relay",
+    "services/signaling",
+    "services/web-relay",
+    "crates/ffi-android",
+]
+exclude = [".cargo/linker-wrapper"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Atlas Remote Team"]
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+log = "0.4"
+ed25519-dalek = { version = "2.0", features = ["rand_core"] }
+x25519-dalek = { version = "2.0", features = ["getrandom"] }
+aes-gcm = { version = "0.10", features = ["std"] }
+sha2 = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+generic-array = "0.14"
+quinn = "0.11"
+tokio-util = { version = "0.7", features = ["codec"] }
+h2 = "0.3"
+stun = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+cfg-if = "1.0"
+bytemuck = "1.14"
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-sys = "0.59"
+warp = "0.3"
+bytes = "1.5"
+url = "2"

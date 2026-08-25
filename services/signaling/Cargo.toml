@@ -1,0 +1,10 @@
+[package]
+name = "atlas-signaling"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+atlas-core = { path = "../../crates/core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

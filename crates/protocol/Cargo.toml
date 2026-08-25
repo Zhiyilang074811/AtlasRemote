@@ -1,0 +1,14 @@
+﻿[package]
+name = "atlas-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+atlas-frame = { path = "../frame" }
+
+[dev-dependencies]
+atlas-protocol = { path = "." }

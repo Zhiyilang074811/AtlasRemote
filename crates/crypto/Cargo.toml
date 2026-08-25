@@ -1,0 +1,15 @@
+﻿[package]
+name = "atlas-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+generic-array = "0.14"

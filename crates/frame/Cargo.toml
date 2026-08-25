@@ -1,0 +1,9 @@
+[package]
+name = "atlas-frame"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
+tracing = { workspace = true }

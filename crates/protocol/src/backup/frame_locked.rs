@@ -1,0 +1,590 @@
+//! ATLS Protocol v1 — FramePacket 序列化/反序列化
+//!
+//! 协议格式 (24 字节固定头):
+//!
+//! `	ext
+//! +----------------+
+//! | MAGIC  4 byte  | "ATLS"
+//! | VERSION 2 byte | u16 (当前 1)
+//! | TYPE   2 byte  | u16 (PacketType)
+//! | SIZE   4 byte  | u32 (payload 长度，大端)
+//! | WIDTH  4 byte  | u32 (帧宽，大端)
+//! | HEIGHT 4 byte  | u32 (帧高，大端)
+//! | TIMESTAMP 4    | u32 (毫秒，大端)
+//! +----------------+
+//! Payload (SIZE 字节)
+//! `
+//!
+//! CRC32 校验覆盖：MAGIC + VERSION + TYPE + SIZE + WIDTH + HEIGHT + TIMESTAMP
+
+use std::io::{Read, Write};
+
+use atlas_frame::PixelFormat;
+use crc32fast::Hasher;
+use thiserror::Error;
+
+use crate::packet::{ATLS_MAGIC, ATLS_VERSION, HEADER_SIZE, PacketType};
+
+// ─── 错误类型 ───────────────────────────────────────────────
+
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    #[error("Header too short: expected {expected}, got {got}")]
+    HeaderTooShort { expected: usize, got: usize },
+
+    #[error("Magic mismatch: expected ATLS, got {:?}", .0)]
+    MagicMismatch([u8; 4]),
+
+    #[error("Unsupported version: {0}")]
+    UnsupportedVersion(u16),
+
+    #[error("Invalid packet type: {0}")]
+    InvalidPacketType(u16),
+
+    #[error("CRC mismatch: expected {expected:#010x}, got {actual:#010x}")]
+    CrcMismatch { expected: u32, actual: u32 },
+
+    #[error("Payload too large: {0} bytes (max {1})")]
+    PayloadTooLarge(usize, usize),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Truncated payload: expected {expected}, got {got}")]
+    TruncatedPayload { expected: usize, got: usize },
+}
+
+pub type Result<T> = std::result::Result<T, ProtocolError>;
+
+// ─── FramePacket ─────────────────────────────────────────────
+
+/// 完整协议包，包含 24 字节固定头 + payload
+#[derive(Debug, Clone)]
+pub struct FramePacket {
+    pub version: u16,
+    pub packet_type: PacketType,
+    pub payload_length: u32,
+    pub width: u32,
+    pub height: u32,
+    pub timestamp: u32,
+    pub payload: Vec<u8>,
+    pub crc: u32,
+}
+
+impl FramePacket {
+    /// 总大小 = 头 + payload
+    pub fn total_size(&self) -> usize {
+        HEADER_SIZE + 4 + self.payload.len()
+    }
+
+    /// 计算 payload 部分的 CRC32（不含头）
+    pub fn compute_crc(&self) -> u32 {
+        let mut hasher = Hasher::new();
+        hasher.update(&self.payload);
+        hasher.finalize()
+    }
+
+    /// 验证 CRC32 校验和
+    pub fn validate_crc(&self) -> bool {
+        self.compute_crc() == self.crc
+    }
+
+    /// 构造帧包（payload 为视频帧数据，如 H264 或 BGRA）
+    pub fn new_frame(
+        width: u32,
+        height: u32,
+        timestamp_ms: u32,
+        pixel_format: PixelFormat,
+        payload: Vec<u8>,
+    ) -> Result<Self> {
+        let payload_length = payload.len() as u32;
+        if payload_length > 50_000_000 {
+            return Err(ProtocolError::PayloadTooLarge(
+                payload_length as usize,
+                50_000_000,
+            ));
+        }
+        let crc = Self::compute_crc(&payload);
+        Ok(FramePacket {
+            version: ATLS_VERSION,
+            packet_type: PacketType::Frame,
+            payload_length,
+            width,
+            height,
+            timestamp: timestamp_ms,
+            payload,
+            crc,
+        })
+    }
+
+    /// 构造输入事件包
+    pub fn new_input(
+        timestamp_ms: u32,
+        event_bytes: Vec<u8>,
+    ) -> Result<Self> {
+        let payload_length = event_bytes.len() as u32;
+        let crc = Self::compute_crc(&event_bytes);
+        Ok(FramePacket {
+            version: ATLS_VERSION,
+            packet_type: PacketType::Input,
+            payload_length,
+            width: 0,
+            height: 0,
+            timestamp: timestamp_ms,
+            payload: event_bytes,
+            crc,
+        })
+    }
+
+    /// 构造 ping 包
+    pub fn new_ping() -> Self {
+        FramePacket {
+            version: ATLS_VERSION,
+            packet_type: PacketType::Ping,
+            payload_length: 0,
+            width: 0,
+            height: 0,
+            timestamp: 0,
+            payload: Vec::new(),
+            crc: 0,
+        }
+    }
+
+    /// 构造 pong 包
+    pub fn new_pong(timestamp_ms: u32) -> Self {
+        FramePacket {
+            version: ATLS_VERSION,
+            packet_type: PacketType::Pong,
+            payload_length: 4,
+            width: 0,
+            height: 0,
+            timestamp: timestamp_ms,
+            payload: timestamp_ms.to_be_bytes().to_vec(),
+            crc: 0,
+        }
+    }
+
+    /// 序列化到字节缓冲区（包含 CRC，总长 = HEADER_SIZE + payload.len()）
+    ///
+    /// 布局：
+    ///   [4 MAGIC][2 VERSION][2 TYPE][4 SIZE][4 WIDTH][4 HEIGHT][4 TIMESTAMP][CRC4][payload]
+    /// 总长 = 24 + 4 (crc) + payload.len() = 28 + payload.len()
+    ///
+    /// 注意：CRC 包含在头部之后的 4 字节，不属于 payload 长度字段。
+    /// payload_length 字段只计 payload 本身。
+    pub fn serialize(&self) -> Vec<u8> {
+        let total = HEADER_SIZE + 4 + self.payload.len(); // 4 bytes for CRC
+        let mut buf = Vec::with_capacity(total);
+
+        // Header
+        buf.extend_from_slice(&ATLS_MAGIC);
+        buf.extend_from_slice(&self.version.to_be_bytes());
+        buf.extend_from_slice(&self.packet_type.to_u16().to_be_bytes());
+        buf.extend_from_slice(&self.payload_length.to_be_bytes());
+        buf.extend_from_slice(&self.width.to_be_bytes());
+        buf.extend_from_slice(&self.height.to_be_bytes());
+        buf.extend_from_slice(&self.timestamp.to_be_bytes());
+
+        // CRC32
+        buf.extend_from_slice(&self.crc.to_be_bytes());
+
+        // Payload
+        buf.extend_from_slice(&self.payload);
+
+        buf
+    }
+
+    /// 从字节缓冲区反序列化
+    ///
+    /// 返回 (packet, consumed_bytes)
+    /// consumed_bytes = 0 表示数据不足，需要继续读取
+    pub fn deserialize(data: &[u8]) -> Result<(FramePacket, usize)> {
+        if data.len() < HEADER_SIZE {
+            return Err(ProtocolError::HeaderTooShort {
+                expected: HEADER_SIZE,
+                got: data.len(),
+            });
+        }
+
+        // Magic
+        let mut magic = [0u8; 4];
+        magic.copy_from_slice(&data[0..4]);
+        if magic != ATLS_MAGIC {
+            return Err(ProtocolError::MagicMismatch(magic));
+        }
+
+        // Version
+        let version = u16::from_be_bytes([data[4], data[5]]);
+        if version != ATLS_VERSION {
+            return Err(ProtocolError::UnsupportedVersion(version));
+        }
+
+        // Type
+        let type_val = u16::from_be_bytes([data[6], data[7]]);
+        let packet_type = PacketType::from_u16(type_val)
+            .ok_or(ProtocolError::InvalidPacketType(type_val))?;
+
+        // Payload length
+        let payload_length = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+
+        // Width / Height
+        let width = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
+        let height = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+
+        // Timestamp
+        let timestamp = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+
+        // CRC (4 bytes after header)
+        let expected_crc = if data.len() >= HEADER_SIZE + 4 {
+            u32::from_be_bytes([data[24], data[25], data[26], data[27]])
+        } else {
+            return Err(ProtocolError::HeaderTooShort {
+                expected: HEADER_SIZE + 4,
+                got: data.len(),
+            });
+        };
+
+        // Payload
+        let payload_start = HEADER_SIZE + 4;
+        if data.len() < payload_start + payload_length {
+            return Err(ProtocolError::TruncatedPayload {
+                expected: payload_start + payload_length,
+                got: data.len(),
+            });
+        }
+        let payload = data[payload_start..payload_start + payload_length].to_vec();
+
+        // Validate CRC (compute over payload only)
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let computed_crc = hasher.finalize();
+        if computed_crc != expected_crc {
+            return Err(ProtocolError::CrcMismatch {
+                expected: computed_crc,
+                actual: expected_crc,
+            });
+        }
+
+        let consumed = payload_start + payload_length;
+        let packet = FramePacket {
+            version,
+            packet_type,
+            payload_length: payload_length as u32,
+            width,
+            height,
+            timestamp,
+            payload,
+            crc: expected_crc,
+        };
+
+        Ok((packet, consumed))
+    }
+
+    /// 将序列化后的字节写入 Write 目标
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<usize> {
+        let bytes = self.serialize();
+        writer.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// 从 Read 目标读取一个完整包（阻塞）
+    pub fn read_from<R: Read>(reader: &mut R) -> Result<FramePacket> {
+        // 先读 header (24 bytes)
+        let mut header = [0u8; HEADER_SIZE];
+        reader.read_exact(&mut header)?;
+
+        // 验证 magic
+        if header[0..4] != ATLS_MAGIC {
+            return Err(ProtocolError::MagicMismatch(
+                header[0..4].try_into().unwrap(),
+            ));
+        }
+
+        let version = u16::from_be_bytes([header[4], header[5]]);
+        if version != ATLS_VERSION {
+            return Err(ProtocolError::UnsupportedVersion(version));
+        }
+
+        let type_val = u16::from_be_bytes([header[6], header[7]]);
+        let packet_type = PacketType::from_u16(type_val)
+            .ok_or(ProtocolError::InvalidPacketType(type_val))?;
+
+        let payload_length = u32::from_be_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let width = u32::from_be_bytes([header[12], header[13], header[14], header[15]]);
+        let height = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
+        let timestamp = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
+
+        // 读 CRC (4 bytes)
+        let mut crc_bytes = [0u8; 4];
+        reader.read_exact(&mut crc_bytes)?;
+        let expected_crc = u32::from_be_bytes(crc_bytes);
+
+        // 读 payload
+        if payload_length > 0 {
+            let mut payload = vec![0u8; payload_length];
+            reader.read_exact(&mut payload)?;
+
+            // 验证 CRC
+            let mut hasher = Hasher::new();
+            hasher.update(&payload);
+            let computed_crc = hasher.finalize();
+            if computed_crc != expected_crc {
+                return Err(ProtocolError::CrcMismatch {
+                    expected: computed_crc,
+                    actual: expected_crc,
+                });
+            }
+
+            Ok(FramePacket {
+                version,
+                packet_type,
+                payload_length: payload_length as u32,
+                width,
+                height,
+                timestamp,
+                payload,
+                crc: expected_crc,
+            })
+        } else {
+            // Empty payload — 只验证 CRC 为 0 (ping 等)
+            if expected_crc != 0 {
+                return Err(ProtocolError::CrcMismatch {
+                    expected: 0,
+                    actual: expected_crc,
+                });
+            }
+            Ok(FramePacket {
+                version,
+                packet_type,
+                payload_length: 0,
+                width,
+                height,
+                timestamp,
+                payload: Vec::new(),
+                crc: 0,
+            })
+        }
+    }
+}
+
+// ─── 便捷函数 ───────────────────────────────────────────────
+
+/// 判断是否还有足够的字节来读取一个完整的包头
+pub fn has_enough_data_for_header(buf: &[u8]) -> bool {
+    buf.len() >= HEADER_SIZE
+}
+
+/// 从缓冲区中读取 payload 长度（用于流式读取时的分段处理）
+pub fn peek_payload_length(buf: &[u8]) -> Option<usize> {
+    if buf.len() < HEADER_SIZE + 4 {
+        return None;
+    }
+    Some(u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize)
+}
+
+/// 计算某个包需要多少字节才能完整读取（header + crc + payload）
+pub fn total_packet_size(payload_length: usize) -> usize {
+    HEADER_SIZE + 4 + payload_length
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::PacketType;
+
+    #[test]
+    fn test_frame_packet_roundtrip() {
+        let packet = FramePacket::new_frame(
+            1920,
+            1080,
+            12345678,
+            atlas_frame::PixelFormat::H264,
+            vec![0x00, 0x01, 0x02, 0x03, 0xFF],
+        )
+        .unwrap();
+
+        assert_eq!(packet.version, ATLS_VERSION);
+        assert_eq!(packet.packet_type, PacketType::Frame);
+        assert_eq!(packet.width, 1920);
+        assert_eq!(packet.height, 1080);
+        assert_eq!(packet.timestamp, 12345678);
+        assert_eq!(packet.payload, vec![0x00, 0x01, 0x02, 0x03, 0xFF]);
+        assert!(packet.validate_crc());
+
+        let serialized = packet.serialize();
+        assert_eq!(serialized.len(), HEADER_SIZE + 4 + 5);
+
+        let (decoded, consumed) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(consumed, serialized.len());
+        assert_eq!(decoded.version, packet.version);
+        assert_eq!(decoded.packet_type, packet.packet_type);
+        assert_eq!(decoded.width, packet.width);
+        assert_eq!(decoded.height, packet.height);
+        assert_eq!(decoded.timestamp, packet.timestamp);
+        assert_eq!(decoded.payload, packet.payload);
+    }
+
+    #[test]
+    fn test_empty_payload_ping() {
+        let packet = FramePacket::new_ping();
+        let serialized = packet.serialize();
+        let (decoded, consumed) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(decoded.packet_type, PacketType::Ping);
+        assert_eq!(decoded.payload.len(), 0);
+        assert_eq!(consumed, serialized.len());
+    }
+
+    #[test]
+    fn test_pong_packet() {
+        let ts = 99999u32;
+        let packet = FramePacket::new_pong(ts);
+        let serialized = packet.serialize();
+        let (decoded, _) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(decoded.packet_type, PacketType::Pong);
+        assert_eq!(decoded.payload, ts.to_be_bytes());
+    }
+
+    #[test]
+    fn test_input_packet() {
+        let event = vec![0x01, 0x02, 0x03, 0x04];
+        let packet = FramePacket::new_input(1000, event.clone()).unwrap();
+        assert_eq!(packet.packet_type, PacketType::Input);
+        assert_eq!(packet.payload, event);
+
+        let serialized = packet.serialize();
+        let (decoded, _) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(decoded.payload, event);
+    }
+
+    #[test]
+    fn test_magic_mismatch() {
+        let packet = FramePacket::new_frame(640, 480, 0, atlas_frame::PixelFormat::Bgra32, vec![1, 2, 3]).unwrap();
+        let mut serialized = packet.serialize();
+        serialized[0] = 0xFF; // corrupt magic
+        let result = FramePacket::deserialize(&serialized);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::MagicMismatch(_) => {},
+            other => panic!("Expected MagicMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_version_mismatch() {
+        let packet = FramePacket::new_frame(640, 480, 0, atlas_frame::PixelFormat::Bgra32, vec![1, 2, 3]).unwrap();
+        let mut serialized = packet.serialize();
+        // Modify version byte
+        serialized[4] = 99;
+        let result = FramePacket::deserialize(&serialized);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::UnsupportedVersion(99) => {},
+            other => panic!("Expected UnsupportedVersion(99), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_crc_mismatch() {
+        let packet = FramePacket::new_frame(640, 480, 0, atlas_frame::PixelFormat::Bgra32, vec![1, 2, 3]).unwrap();
+        let mut serialized = packet.serialize();
+        // Corrupt CRC byte
+        serialized[HEADER_SIZE] ^= 0xFF;
+        let result = FramePacket::deserialize(&serialized);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::CrcMismatch { .. } => {},
+            other => panic!("Expected CrcMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_header_too_short() {
+        let result = FramePacket::deserialize(&[0x41, 0x54, 0x4C]); // "ATL", only 3 bytes
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::HeaderTooShort { .. } => {},
+            other => panic!("Expected HeaderTooShort, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_truncated_payload() {
+        let packet = FramePacket::new_frame(640, 480, 0, atlas_frame::PixelFormat::H264, vec![1; 100]).unwrap();
+        let serialized = packet.serialize();
+        // Truncate the payload by 10 bytes
+        let truncated = &serialized[..serialized.len() - 10];
+        let result = FramePacket::deserialize(truncated);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::TruncatedPayload { .. } => {},
+            other => panic!("Expected TruncatedPayload, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_large_payload() {
+        // 1MB payload
+        let data = vec![0xAB; 1024 * 1024];
+        let packet = FramePacket::new_frame(1920, 1080, 42, atlas_frame::PixelFormat::H264, data.clone()).unwrap();
+        let serialized = packet.serialize();
+        let (decoded, _) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(decoded.payload, data);
+        assert_eq!(decoded.width, 1920);
+        assert_eq!(decoded.height, 1080);
+    }
+
+    #[test]
+    fn test_payload_size_limit() {
+        let huge = vec![0u8; 50_000_001];
+        let result = FramePacket::new_frame(1920, 1080, 0, atlas_frame::PixelFormat::H264, huge);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::PayloadTooLarge(_, _) => {},
+            other => panic!("Expected PayloadTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stream_read_write() {
+        use std::io::{Cursor, Read, Write};
+
+        let packet = FramePacket::new_frame(1280, 720, 777, atlas_frame::PixelFormat::Bgra32, vec![0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        let serialized = packet.serialize();
+
+        // Test write_to / read_from via Cursor
+        let mut buf = Vec::new();
+        packet.write_to(&mut buf).unwrap();
+        assert_eq!(buf, serialized);
+
+        let mut cursor = Cursor::new(&serialized);
+        let decoded = FramePacket::read_from(&mut cursor).unwrap();
+        assert_eq!(decoded.width, 1280);
+        assert_eq!(decoded.height, 720);
+        assert_eq!(decoded.payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_total_packet_size() {
+        assert_eq!(total_packet_size(0), HEADER_SIZE + 4);
+        assert_eq!(total_packet_size(100), HEADER_SIZE + 4 + 100);
+        assert_eq!(total_packet_size(1_000_000), HEADER_SIZE + 4 + 1_000_000);
+    }
+
+    #[test]
+    fn test_peek_payload_length() {
+        let packet = FramePacket::new_frame(1920, 1080, 0, atlas_frame::PixelFormat::H264, vec![0u8; 500]).unwrap();
+        let serialized = packet.serialize();
+        assert_eq!(peek_payload_length(&serialized), Some(500));
+        assert_eq!(peek_payload_length(&serialized[..HEADER_SIZE - 1]), None);
+    }
+
+    #[test]
+    fn test_bgra_frame() {
+        let raw_bgra = vec![0u8; 1920 * 1080 * 4];
+        let packet = FramePacket::new_frame(1920, 1080, 100, atlas_frame::PixelFormat::Bgra32, raw_bgra.clone()).unwrap();
+        assert_eq!(packet.payload_length, 1920 * 1080 * 4);
+        let serialized = packet.serialize();
+        let (decoded, _) = FramePacket::deserialize(&serialized).unwrap();
+        assert_eq!(decoded.payload, raw_bgra);
+    }
+}

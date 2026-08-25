@@ -1,0 +1,11 @@
+[package]
+name = "atlas-relay"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+atlas-core = { path = "../../crates/core" }
+atlas-transport = { path = "../../crates/transport" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
