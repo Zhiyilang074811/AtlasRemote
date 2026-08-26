@@ -8,7 +8,7 @@
       <h2>Remote Desktop</h2>
       <div class="input-group">
         <label>Pair Code</label>
-        <input v-model="pairCode" type="text" placeholder="Enter 6-digit code" :disabled="connecting" maxlength="6" pattern="[0-9]*" inputmode="numeric" />
+        <input id="pair-code-input" v-model="pairCode" type="text" placeholder="Enter 6-digit code" :disabled="connecting" maxlength="6" pattern="[0-9]*" inputmode="numeric" />
       </div>
       <div class="relay-info">
         <span>Relay: <code>127.0.0.1:8080</code></span>
@@ -178,3 +178,4 @@ async function connect() {
 .error-msg { color: #f87171; font-size: 13px; text-align: center; margin-top: 12px; }
 .quick-links a { color: #4f8ef7; font-size: 13px; text-decoration: none; &:hover { text-decoration: underline; } }
 </style>
+
