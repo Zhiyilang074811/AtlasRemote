@@ -16,7 +16,7 @@ async def relay_host_to_ws(device_id, ws, reader):
     buf = bytearray()
     try:
         while True:
-            chunk = await asyncio.wait_for(reader.read(8192), timeout=2.0)
+            chunk = await reader.read(8192)
             if not chunk:
                 break
             buf.extend(chunk)
