@@ -305,33 +305,32 @@ function handleVideoFrame(blob: Blob) {
       }
       bitrate.value = data.length * 8 / ((Date.now() - lastFrameTime) / 1000)
       lastFrameTime = Date.now()
-    } else {
-      // BGRA / raw - fallback to image rendering
-      codecName.value = "BGRA"
-      if (!ctx || !canvasRef.value) return
-      const img = new Image()
-      const url = URL.createObjectURL(blob)
-      img.onload = () => {
-        const area = videoAreaRef.value
-        if (!area) { URL.revokeObjectURL(url); return }
-        const r = area.getBoundingClientRect()
-        const imgAspect = img.width / img.height
-        const areaAspect = r.width / r.height
-        let dw = r.width, dh = r.height
-        if (imgAspect > areaAspect) dh = r.width / imgAspect
-        else dw = r.height * imgAspect
-        const dx = (r.width - dw) / 2, dy = (r.height - dh) / 2
-        canvasRef.value!.width = dw
-        canvasRef.value!.height = dh
-        if (ctx) ctx.drawImage(img, dx, dy, dw, dh)
-        width.value = img.width
-        height.value = img.height
-        bitrate.value = blob.size * 8 / ((Date.now() - lastFrameTime) / 1000)
-        lastFrameTime = Date.now()
-        URL.revokeObjectURL(url)
+      } else {
+        // BGRA / raw - render directly to canvas
+        codecName.value = 'BGRA'
+        if (!ctx || !canvasRef.value) return
+        try {
+          const rgba = new Uint8ClampedArray(payload.length)
+          for (let i = 0; i < payload.length; i += 4) {
+            rgba[i]     = payload[i + 2]
+            rgba[i + 1] = payload[i + 1]
+            rgba[i + 2] = payload[i]
+            rgba[i + 3] = payload[i + 3]
+          }
+          const bmp = createImageBitmap(new ImageData(new Uint8ClampedArray(rgba), w, h))
+          canvasRef.value.width = w
+          canvasRef.value.height = h
+          ctx.drawImage(bmp, 0, 0)
+          bmp.close()
+          width.value = w
+          height.value = h
+          bitrate.value = data.length * 8 / ((Date.now() - lastFrameTime) / 1000)
+          lastFrameTime = Date.now()
+        } catch(e) {
+          logStore.add('error', 'BGRA render error: ' + e)
+        }
       }
-      img.src = url
-    }
+
   }
   reader.readAsArrayBuffer(blob)
 }
