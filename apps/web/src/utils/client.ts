@@ -26,7 +26,6 @@ export class AtlasClient {
   private onFrameCallback: ((data: Blob) => void) | null = null
   private onPairCallback: ((deviceId: string, pairCode: string) => void) | null = null
   private onPairFailCallback: ((reason: string) => void) | null = null
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private readonly RECONNECT_DELAY = 3000
   private relayHost = "127.0.0.1"
   private relayPort = 8080
@@ -39,42 +38,40 @@ export class AtlasClient {
     this.relayPort = port
   }
 
-  onFrame(callback: (data: Blob) => void) {
-    this.onFrameCallback = callback
-  }
-
-  onPair(callback: (deviceId: string, pairCode: string) => void) {
-    this.onPairCallback = callback
-  }
-
-  onPairFail(callback: (reason: string) => void) {
-    this.onPairFailCallback = callback
-  }
+  onFrame(callback: (data: Blob) => void) { this.onFrameCallback = callback }
+  onPair(callback: (deviceId: string, pairCode: string) => void) { this.onPairCallback = callback }
+  onPairFail(callback: (reason: string) => void) { this.onPairFailCallback = callback }
 
   connect(deviceId: string, pairCode: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (this.ws) this.disconnect()
+      if (this.ws) { this.ws.onopen = null; this.ws.onmessage = null; this.ws.onerror = null; this.ws.onclose = null; this.ws.close() }
       this.state.status = "connecting"
       this.state.deviceId = deviceId
       this.state.pairCode = pairCode
       const params = new URLSearchParams({ device: deviceId, code: pairCode })
       const wsUrl = `ws://${this.relayHost}:${this.relayPort}?${params.toString()}`
+      console.log("[AtlasClient] Connecting to:", wsUrl)
       this.ws = new WebSocket(wsUrl)
       this.ws.onopen = () => {
+        console.log("[AtlasClient] WebSocket opened")
         this.state.status = "connected"
-        this.state.latency = 0
         resolve()
       }
       this.ws.onmessage = (event) => {
+        console.log("[AtlasClient] Received:", typeof event.data === "string" ? event.data.slice(0, 100) : event.data.size + " bytes")
         this.handleMessage(event.data)
       }
-      this.ws.onerror = () => {
+      this.ws.onerror = (event) => {
+        console.error("[AtlasClient] WebSocket error:", event)
         this.state.status = "error"
-        reject(new Error("WebSocket error"))
       }
-      this.ws.onclose = () => {
+      this.ws.onclose = (event) => {
+        console.log("[AtlasClient] WebSocket closed:", event.code, event.reason)
         this.state.status = "disconnected"
-        this.scheduleReconnect(deviceId, pairCode)
+        if (event.code !== 1000 && deviceId) {
+          console.log("[AtlasClient] Scheduling reconnect in", this.RECONNECT_DELAY, "ms")
+          setTimeout(() => this.connect(deviceId, pairCode).catch(() => {}), this.RECONNECT_DELAY)
+        }
       }
     })
   }
@@ -103,38 +100,16 @@ export class AtlasClient {
     }
   }
 
-  private scheduleReconnect(deviceId: string, pairCode: string) {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
-    this.reconnectTimer = setTimeout(() => {
-      if (this.state.status === "disconnected" && deviceId) {
-        this.connect(deviceId, pairCode).catch(() => {})
-      }
-    }, this.RECONNECT_DELAY)
-  }
-
-  sendMouse(x: number, y: number) {
-    this.ws?.send(JSON.stringify({ type: "mouse_move", x, y }))
-  }
-
+  sendMouse(x: number, y: number) { this.ws?.send(JSON.stringify({ type: "mouse_move", x, y })) }
   sendClick(button: "left" | "right" = "left", pressed: boolean = true) {
     this.ws?.send(JSON.stringify({ type: "mouse_click", button, pressed }))
   }
-
-  sendWheel(delta: number) {
-    this.ws?.send(JSON.stringify({ type: "wheel", delta }))
-  }
-
-  sendKey(code: string, pressed: boolean = true) {
-    this.ws?.send(JSON.stringify({ type: "key", code, pressed }))
-  }
-
-  sendPairCode(code: string) {
-    this.ws?.send(JSON.stringify({ type: "pair_accept", code }))
-  }
+  sendWheel(delta: number) { this.ws?.send(JSON.stringify({ type: "wheel", delta })) }
+  sendKey(code: string, pressed: boolean = true) { this.ws?.send(JSON.stringify({ type: "key", code, pressed })) }
+  sendPairCode(code: string) { this.ws?.send(JSON.stringify({ type: "pair_accept", code })) }
 
   disconnect() {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
-    this.ws?.close()
+    if (this.ws) { this.ws.onopen = null; this.ws.onmessage = null; this.ws.onerror = null; this.ws.onclose = null; this.ws.close() }
     this.ws = null
     this.state.status = "disconnected"
     this.state.deviceId = ""
@@ -143,4 +118,3 @@ export class AtlasClient {
 }
 
 export const client = new AtlasClient()
-
