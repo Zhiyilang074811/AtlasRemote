@@ -18,7 +18,7 @@ async def relay_host_to_ws(device_id, ws, reader):
         while True:
             chunk = await reader.read(8192)
             if not chunk:
-                log.info(f"[RELAY] Host closed connection for {device_id}")
+                log.info(f"[RELAY] Host closed for {device_id}")
                 break
             buf.extend(chunk)
             while len(buf) >= ATLS_FULL_HEADER:
@@ -115,11 +115,11 @@ async def relay_ws_to_host(device_id, ws):
     except Exception as e:
         log.error(f"[RELAY] WS->Host error for {device_id}: {e}")
 
-async def handle_client(ws, path=None):
+async def handle_client(ws):
+    req_path = ws.request.path if hasattr(ws, "request") and ws.request else "/"
     query = ""
-    req_path = ws.request.path if hasattr(ws, "request") and ws.request else path
-    if req_path and "?" in req_path:
-        query = req_path.split("?")[1]
+    if "?" in req_path:
+        query = req_path.split("?", 1)[1]
     params = {}
     if query:
         for part in query.split("&"):
@@ -161,7 +161,7 @@ async def handle_client(ws, path=None):
 async def main():
     host_port = int(sys.argv[1]) if len(sys.argv) > 1 else 9090
     ws_port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
-    log.info(f"AtlasWebRelay v0.4.0 host={host_port} ws={ws_port}")
+    log.info(f"AtlasWebRelay v0.5.0 host={host_port} ws={ws_port}")
     async with websockets.serve(handle_client, "0.0.0.0", ws_port, origins=None):
         log.info(f"Relay listening on ws://0.0.0.0:{ws_port}")
         await asyncio.Future()
