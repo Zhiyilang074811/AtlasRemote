@@ -18,6 +18,7 @@ async def relay_host_to_ws(device_id, ws, reader):
         while True:
             chunk = await reader.read(8192)
             if not chunk:
+                log.info(f"[RELAY] Host closed connection for {device_id}")
                 break
             buf.extend(chunk)
             while len(buf) >= ATLS_FULL_HEADER:
@@ -25,11 +26,10 @@ async def relay_host_to_ws(device_id, ws, reader):
                     payload_len = int.from_bytes(buf[8:12], "big")
                     total = ATLS_FULL_HEADER + payload_len
                     if len(buf) >= total:
-                        pkt_type = int.from_bytes(buf[4:6], "big")
                         w = int.from_bytes(buf[12:16], "big")
                         h = int.from_bytes(buf[16:20], "big")
                         codec = int.from_bytes(buf[20:22], "big")
-                        log.info(f"[RELAY] Frame: type={pkt_type} w={w} h={h} codec={codec}")
+                        log.info(f"[RELAY] Frame: w={w} h={h} codec={codec}")
                         await ws.send(bytes(buf[:total]))
                         del buf[:total]
                         continue
@@ -37,7 +37,6 @@ async def relay_host_to_ws(device_id, ws, reader):
                     plen = int.from_bytes(buf[6:8], "little")
                     total = INPUT_HEADER_SIZE + plen
                     if len(buf) >= total:
-                        log.info("[RELAY] InputPacket from host (ignored)")
                         del buf[:total]
                         continue
                 if b"\n" in buf:
@@ -50,21 +49,17 @@ async def relay_host_to_ws(device_id, ws, reader):
                         host_device_id = m.group(1).strip()
                         paired_msg = json.dumps({"type": "pair", "deviceId": host_device_id, "pairCode": ""})
                         await ws.send(paired_msg)
-                        log.info(f"[RELAY] Sent pair message: {paired_msg}")
+                        log.info(f"[RELAY] Sent pair: {paired_msg}")
                         continue
                     if line == "PAIR_FAIL":
-                        fail_msg = json.dumps({"type": "pair_fail", "reason": "Invalid pair code"})
-                        await ws.send(fail_msg)
-                        log.warning("[RELAY] Pair failed, closing")
+                        await ws.send(json.dumps({"type": "pair_fail", "reason": "Invalid pair code"}))
                         await ws.close(1008, "Pair code rejected")
                         return
                     await ws.send(line)
                     continue
                 break
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
     except Exception as e:
-        log.error(f"[RELAY] Host->WS error: {e}")
+        log.error(f"[RELAY] Host->WS error for {device_id}: {e}")
 
 async def relay_ws_to_host(device_id, ws):
     try:
@@ -104,7 +99,7 @@ async def relay_ws_to_host(device_id, ws):
                 code = data.get("code", "")
                 cmd = f"PAIR_ACCEPT:{code}"
             else:
-                log.warning(f"[RELAY] Unknown input type: {t}")
+                log.warning(f"[RELAY] Unknown type: {t}")
                 continue
             if cmd and device_id in devices:
                 tw = devices[device_id].get("tcp_writer")
@@ -116,9 +111,9 @@ async def relay_ws_to_host(device_id, ws):
                     except Exception as e:
                         log.error(f"[RELAY] Send to host failed: {e}")
     except websockets.exceptions.ConnectionClosed:
-        pass
+        log.info(f"[RELAY] WS closed for {device_id}")
     except Exception as e:
-        log.error(f"[RELAY] WS->Host error: {e}")
+        log.error(f"[RELAY] WS->Host error for {device_id}: {e}")
 
 async def handle_client(ws, path=None):
     query = ""
@@ -134,7 +129,7 @@ async def handle_client(ws, path=None):
     device_id = params.get("device", "local")
     pair_code = params.get("code", "")
     host_port = int(params.get("host-port", 9090))
-    log.info(f"[WS] New connection device={device_id} code={'***' if pair_code else '(empty)'}")
+    log.info(f"[WS] New connection device={device_id} code={pair_code[:3]}***")
     try:
         tcp_reader, tcp_writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", host_port), timeout=5.0
@@ -166,8 +161,7 @@ async def handle_client(ws, path=None):
 async def main():
     host_port = int(sys.argv[1]) if len(sys.argv) > 1 else 9090
     ws_port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
-    log.info(f"AtlasWebRelay v0.3.0 host={host_port} ws={ws_port}")
-    log.info("Web client: http://127.0.0.1:3000")
+    log.info(f"AtlasWebRelay v0.4.0 host={host_port} ws={ws_port}")
     async with websockets.serve(handle_client, "0.0.0.0", ws_port, origins=None):
         log.info(f"Relay listening on ws://0.0.0.0:{ws_port}")
         await asyncio.Future()
